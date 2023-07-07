@@ -13,11 +13,10 @@ import (
 	"syscall"
 	"time"
 
-	"./db"
+	"gdback_client/db"
 
-	"github.com/AlecAivazis/survey"
-	"github.com/briandowns/spinner"
 	"github.com/gosuri/uiprogress"
+	"gopkg.in/AlecAivazis/survey.v1"
 )
 
 var VERSION = "1.0.0"
@@ -33,8 +32,9 @@ var BANNER = `    _____________
 var BATCH_MAX_SIZE = 300
 var BAR *uiprogress.Bar
 
+const MaxInt64 = 1<<63 - 1
+
 func main() {
-	time_start := time.Now()
 
 	logger := db.NewCustomLogger()
 	fmt.Println(BANNER)
@@ -50,37 +50,56 @@ func main() {
 	selectedDisk, numCPUs, path := askOptions(logger)
 	fmt.Println()
 
+	time_start := time.Now()
+
 	database, dbfilename, err := db.CreateDatabase()
 	if err != nil {
 		logger.Error("Error creating the database:", err)
 	}
 	logger.Info("Database saved as", "'"+dbfilename+"'")
 
-	s := spinner.New(spinner.CharSets[26], 100*time.Millisecond)
-	s.Prefix = "Getting files "
-	s.Start()
-	err = getFiles(database, selectedDisk+path)
-	if err != nil {
-		logger.Error("Error get files in disk selected:", err)
-	}
-	s.Stop()
-	nrows, _ := database.LenData()
-	database.Close()
-	logger.Info("Got", nrows, "files")
+	// Create a channel for communication files - Workers
+	filePathChan := make(chan string)
+
+	// Create a BAR with the maximum length until we find out the total num of files
+	BAR = uiprogress.AddBar(MaxInt64).AppendCompleted().PrependElapsed()
+	// ToDo: change AppendFunct to PrependFunc and try to make this work
+	BAR.AppendFunc(func(b *uiprogress.Bar) string {
+		return fmt.Sprintf("[+] Processed Files (%d/", b.Current())
+	})
+	uiprogress.Start()
 
 	var wg sync.WaitGroup
 	wg.Add(numCPUs)
 
-	BAR = uiprogress.AddBar(nrows).AppendCompleted().PrependElapsed()
-	BAR.PrependFunc(func(b *uiprogress.Bar) string {
-		return fmt.Sprintf("[+] Process Files (%d/%d)", b.Current(), nrows)
-	})
-	uiprogress.Start()
 	for i := 1; i <= numCPUs; i++ {
-		go processData(logger, dbfilename, nrows, i, numCPUs, &wg)
+		go dataProcessor(logger, filePathChan, dbfilename, i, &wg)
 	}
+
+	// s := spinner.New(spinner.CharSets[26], 100*time.Millisecond)
+	// s.Prefix = "Calculating number of files "
+	// s.Start()
+	nrows, err := sendFilePaths2Channel(logger, database, filePathChan, selectedDisk+path)
+	if err != nil {
+		logger.Error("Error get files in disk selected:", err)
+	}
+	// s.Stop()
+
+	// When all files sent, write numCPUs 0s to stop go routines
+	for i := 1; i <= numCPUs; i++ {
+		filePathChan <- "0"
+	}
+
+	// Update the bar now that we know the number of files
+	BAR.Total = nrows
+	BAR.AppendFunc(func(b *uiprogress.Bar) string {
+		return fmt.Sprintf("%d)", nrows)
+	})
 	wg.Wait()
 	uiprogress.Stop()
+
+	database.Close()
+	logger.Info("Processed", nrows, "files")
 
 	logger.Info("Update metadata table")
 	processMetadata(logger, dbfilename, time_start)
@@ -124,7 +143,7 @@ func askOptions(logger *db.CustomLogger) (string, int, string) {
 	prompt_input := &survey.Input{
 		Message: `Specifies path in disk (Leave blank for all) (Example: \Users\User1\):`,
 	}
-	survey.AskOne(prompt_input, &path)
+	survey.AskOne(prompt_input, &path, nil)
 	if path != "" {
 		_, err = os.Stat(selectedDisk + path)
 		if err != nil {
@@ -140,63 +159,30 @@ func askOptions(logger *db.CustomLogger) (string, int, string) {
 	return selectedDisk, numCPUs, path
 }
 
-func getFiles(database *db.Database, root string) error {
-	files := make([]*db.Data, 0)
+func sendFilePaths2Channel(logger *db.CustomLogger, database *db.Database, filePathChan chan string, root string) (int, error) {
+	var num_files int = 0
+
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if (err == nil) && (!info.IsDir()) {
-			fileData := &db.Data{
-				FullPath:             path,
-				FileName:             "",
-				FileExtension:        "",
-				HashMD5:              "",
-				SizeBytes:            -1,
-				DateCreation:         "",
-				DateLastModification: "",
-			}
-
-			files = append(files, fileData)
-
-			if len(files) >= BATCH_MAX_SIZE {
-				err := database.InsertDatas(files)
-				if err != nil {
-					return fmt.Errorf("Failed to insert batch of files: %v", err)
-				}
-				files = files[:0]
-			}
+			// send path to a worker through the channel
+			filePathChan <- path
+			num_files++
 		}
 
 		return nil
 	})
 
 	if err != nil {
-		return fmt.Errorf("Failed to walk through files: %v", err)
+		return num_files, fmt.Errorf("Failed to walk through files: %v", err)
 	}
 
-	if len(files) > 0 {
-		err := database.InsertDatas(files)
-		if err != nil {
-			return fmt.Errorf("Failed to insert remaining files: %v", err)
-		}
-	}
-
-	return nil
+	return num_files, nil
 }
 
-func processData(logger *db.CustomLogger, dbpath string, nrows int, id int, nworkers int, wg *sync.WaitGroup) {
+func dataProcessor(logger *db.CustomLogger, fileChan <-chan string, dbpath string, id int, wg *sync.WaitGroup) {
 	defer wg.Done()
-	total_files := nrows / nworkers
-	index_start := 1
-	index_end := -1
-	for i := 1; i <= id; i++ {
-		if i > 1 {
-			index_start = index_start + total_files
-		}
-		if i == nworkers {
-			index_end = nrows
-		} else {
-			index_end = index_start + total_files - 1
-		}
-	}
+
+	files := make([]*db.Data, 0)
 
 	database, err := db.Connect(dbpath)
 	if err != nil {
@@ -204,37 +190,46 @@ func processData(logger *db.CustomLogger, dbpath string, nrows int, id int, nwor
 	}
 	defer database.Close()
 
-	index_i := index_start
-	index_j := index_start + BATCH_MAX_SIZE
-	for index_i <= index_end {
-		if index_j > index_end {
-			index_j = index_end
+	for {
+		path := <-fileChan
+		if path == "0" {
+			break
 		}
-		rows, err := database.GetDatas(index_i, index_j)
-		if err != nil {
-			logger.Error("Error GetDatas in goroutine", id, ":", err)
-		}
-		nrows := len(rows)
-		for _, row := range rows {
-			path := row.FullPath
-			fileInfo, err := os.Stat(path)
-			if err == nil {
-				row.FileName = fileInfo.Name()
-				row.FileExtension = filepath.Ext(path)
-				row.SizeBytes = int(fileInfo.Size())
-				row.DateLastModification = fileInfo.ModTime().Format("2006-01-02 15:04:05")
+
+		fileInfo, err := os.Stat(path)
+		if err == nil {
+			DateCreation, _ := getFileCreationTimeWindows(path)
+			HashMD5, _ := getFileMD5(path)
+			fileData := &db.Data{
+				FullPath:             path,
+				FileName:             fileInfo.Name(),
+				FileExtension:        filepath.Ext(path),
+				HashMD5:              HashMD5,
+				SizeBytes:            int(fileInfo.Size()),
+				DateCreation:         DateCreation,
+				DateLastModification: fileInfo.ModTime().Format("2006-01-02 15:04:05"),
 			}
-			row.DateCreation, _ = getFileCreationTimeWindows(path)
-			row.HashMD5, _ = getFileMD5(path)
+
+			files = append(files, fileData)
 			BAR.Incr()
 		}
-		database.UpdateDatas(rows)
 
-		index_i = index_i + nrows
-		if (index_i + BATCH_MAX_SIZE) <= index_end {
-			index_j = index_j + BATCH_MAX_SIZE
-		} else {
-			index_j = index_end
+		if len(files) >= BATCH_MAX_SIZE {
+			// *QUESTION: No need to use mutex to write in the database?
+			err := database.InsertDatas(files)
+			if err != nil {
+				logger.Error("Failed to insert batch of files: %v", err)
+			}
+			files = files[:0]
+		}
+
+	}
+
+	if len(files) > 0 {
+		// *QUESTION: No need to use mutex to write in the database?
+		err := database.InsertDatas(files)
+		if err != nil {
+			logger.Error("Failed to insert remaining files: %v", err)
 		}
 	}
 }
