@@ -79,14 +79,10 @@ func main() {
 		go dataProcessor(logger, filePathChan, dbfilename, i, &wg)
 	}
 
-	// s := spinner.New(spinner.CharSets[26], 100*time.Millisecond)
-	// s.Prefix = "Calculating number of files "
-	// s.Start()
 	nrows, err := sendFilePaths2Channel(logger, database, filePathChan, selectedDisk+path)
 	if err != nil {
 		logger.Error("Error get files in disk selected:", err)
 	}
-	// s.Stop()
 
 	// Close channel so go routines stop when all events processed
 	close(filePathChan)
@@ -212,7 +208,6 @@ func dataProcessor(logger *db.CustomLogger, fileChan <-chan string, dbpath strin
 		}
 
 		if len(files) >= BATCH_MAX_SIZE {
-			// *QUESTION: No need to use mutex to write in the database?
 			err := database.InsertDatas(files)
 			if err != nil {
 				logger.Error("Failed to insert batch of files: %v", err)
@@ -223,7 +218,6 @@ func dataProcessor(logger *db.CustomLogger, fileChan <-chan string, dbpath strin
 	}
 
 	if len(files) > 0 {
-		// *QUESTION: No need to use mutex to write in the database?
 		err := database.InsertDatas(files)
 		if err != nil {
 			logger.Error("Failed to insert remaining files: %v", err)
