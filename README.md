@@ -92,6 +92,7 @@ Certainly! If you prefer open-source tools for your forensic investigation, here
 ## General Idea
 La siguiente imagen describe la metodología de trabajo que se va a seguir con Git:
 ![image explaining the git work methodology](https://wac-cdn.atlassian.com/dam/jcr:cc0b526e-adb7-4d45-874e-9bcea9898b4a/04%20Hotfix%20branches.svg?cdnVersion=1090)
+En esta página se describe en mayor detalle la imagen [Gitflow Workflow](https://www.atlassian.com/git/tutorials/comparing-workflows/gitflow-workflow)
 
 La idea principal es que el `main` solo se deje para versiones estables y que se trabaje en `default`. La rama `default` esta puesta como default en Github, cada vez que se quiera añadir una funcionalidad o arreglar algo lo que se hará es crear una rama nueva a partir de develop (`feature`). Posteriormente se mergeará esa rama con develop de nuevo. Cuando haya suficientes funcionalidades añadidas a develop y queramos sacar una release haríamos lo siguiente:
 - A partir de develop (código que queremos utilizar para el release), creamos una rama `release`, en esta rama se testeará la aplicación y se corregirán pequeños cambios para preparar la release.
