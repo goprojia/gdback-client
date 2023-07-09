@@ -58,8 +58,11 @@ func main() {
 	}
 	logger.Info("Database saved as", "'"+dbfilename+"'")
 
-	// Create a channel for communication files - Workers
-	filePathChan := make(chan string)
+	// Create a channel for communication FilePaths - Workers of size 1000 events
+	// Bigger buffer => more memory used, but less probability of sendFilePaths2Channel blocking in case
+	// that it process data faster than numCPUs go routines.
+	// The channel stores n filepaths (pointers to string)
+	filePathChan := make(chan string, 100000)
 
 	// Create a BAR with the maximum length until we find out the total num of files
 	BAR = uiprogress.AddBar(MaxInt64).AppendCompleted().PrependElapsed()
@@ -85,10 +88,8 @@ func main() {
 	}
 	// s.Stop()
 
-	// When all files sent, write numCPUs 0s to stop go routines
-	for i := 1; i <= numCPUs; i++ {
-		filePathChan <- "0"
-	}
+	// Close channel so go routines stop when all events processed
+	close(filePathChan)
 
 	// Update the bar now that we know the number of files
 	BAR.Total = nrows
@@ -162,7 +163,7 @@ func askOptions(logger *db.CustomLogger) (string, int, string) {
 func sendFilePaths2Channel(logger *db.CustomLogger, database *db.Database, filePathChan chan string, root string) (int, error) {
 	var num_files int = 0
 
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+	err := filepath.WalkDir(root, func(path string, info os.DirEntry, err error) error {
 		if (err == nil) && (!info.IsDir()) {
 			// send path to a worker through the channel
 			filePathChan <- path
@@ -190,11 +191,7 @@ func dataProcessor(logger *db.CustomLogger, fileChan <-chan string, dbpath strin
 	}
 	defer database.Close()
 
-	for {
-		path := <-fileChan
-		if path == "0" {
-			break
-		}
+	for path := range fileChan {
 
 		fileInfo, err := os.Stat(path)
 		if err == nil {
