@@ -32,7 +32,7 @@ var BANNER = `    _____________
 var BATCH_MAX_SIZE = 300
 var BAR *uiprogress.Bar
 
-const MaxInt64 = 1<<63 - 1
+const MaxInt32 = 1<<31 - 1
 
 func main() {
 
@@ -65,7 +65,7 @@ func main() {
 	filePathChan := make(chan string, 100000)
 
 	// Create a BAR with the maximum length until we find out the total num of files
-	BAR = uiprogress.AddBar(MaxInt64).AppendCompleted().PrependElapsed()
+	BAR = uiprogress.AddBar(MaxInt32).AppendCompleted().PrependElapsed()
 	// ToDo: change AppendFunct to PrependFunc and try to make this work
 	BAR.AppendFunc(func(b *uiprogress.Bar) string {
 		return fmt.Sprintf("[+] Processed Files (%d/", b.Current())
