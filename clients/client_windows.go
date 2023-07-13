@@ -28,7 +28,7 @@ var BANNER = `    _____________
    ||   _||_   ||
    ||  |_||_|  ||  
    ||__________||
-   |/__________|/` + "  by Siriil v" + VERSION + "\n\n"
+   |/__________|/` + "  by Siriil & aams-eam v" + VERSION + "\n\n"
 var BATCH_MAX_SIZE = 300
 var BAR *uiprogress.Bar
 
